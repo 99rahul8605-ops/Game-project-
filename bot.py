@@ -61,9 +61,9 @@ def reset_and_set_commands():
         {"command": "start", "description": "🎮 Register & get 1000 Rs"},
         {"command": "bal", "description": "💰 Check balance & status"},
         {"command": "top", "description": "🏆 Show top 10 richest players"},
-        {"command": "kill", "description": "🔪 Kill someone (reply, gain 500 Rs, max 10 per 12h)"},
+        {"command": "kill", "description": "🔪 Kill someone (reply, gain 500 Rs, max 10 per 12h, 1min cooldown)"},
         {"command": "revive", "description": "💊 Revive yourself or someone (cost 100 Rs)"},
-        {"command": "rob", "description": "🦹 Rob someone (reply, steal 100-5000 Rs in hundreds, max 10 per 12h, cannot rob protected users)"},
+        {"command": "rob", "description": "🦹 Rob someone (reply, steal 100-5000 Rs in hundreds, max 10 per 12h, 1min cooldown, cannot rob protected)"},
         {"command": "protect", "description": "🛡️ Buy protection from being killed/robbed"},
         {"command": "give", "description": "🎁 Give money (reply, 10% fee deducted)"},
         {"command": "invite", "description": "📨 Get your personal invite link"},
@@ -216,7 +216,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if referrer_id and referrer_id != user_id:
         welcome += f"\n\n✨ You joined through a friend's invite!"
     
-    await update.message.reply_text(welcome, parse_mode='HTML')
+    # Add "Add to Group" button (only in private chats)
+    if update.effective_chat.type == "private":
+        bot_username = context.bot.username
+        keyboard = [[InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{bot_username}?startgroup=start")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(welcome, parse_mode='HTML', reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(welcome, parse_mode='HTML')
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
@@ -224,9 +231,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎮 /start – Register and get 1000 Rs\n"
         "💰 /bal – Check your balance and status (reply to check others)\n"
         "🏆 /top – Show top 10 richest players\n"
-        "🔪 /kill – Reply to someone to kill them (gain 500 Rs, target dies 5h, max 10 per 12h)\n"
+        "🔪 /kill – Reply to someone to kill them (gain 500 Rs, target dies 5h, max 10 per 12h, 1min cooldown)\n"
         "💊 /revive – Revive yourself or reply to revive someone (cost 100 Rs)\n"
-        "🦹 /rob – Reply to rob someone (steal 100-5000 Rs in hundreds, max 10 per 12h, cannot rob protected users)\n"
+        "🦹 /rob – Reply to rob someone (steal 100-5000 Rs in hundreds, max 10 per 12h, 1min cooldown, cannot rob protected users)\n"
         "🛡️ /protect – Buy protection from being killed/robbed (plans with inline buttons)\n"
         "🎁 /give <amount> – Reply to someone to give them money (10% fee deducted)\n"
         "📨 /invite – Get your personal invite link (works only in DM)\n"
@@ -306,14 +313,14 @@ async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username
     
-    # Cooldown check
+    # Cooldown check (now 1 minute)
     if user_id in last_kill:
         time_diff = datetime.utcnow() - last_kill[user_id]
-        if time_diff < timedelta(minutes=5):
-            remaining = timedelta(minutes=5) - time_diff
-            minutes, seconds = divmod(remaining.seconds, 60)
+        if time_diff < timedelta(minutes=1):
+            remaining = timedelta(minutes=1) - time_diff
+            seconds = remaining.seconds
             await update.message.reply_text(
-                f"⏳ <b>Cooldown!</b> You must wait {minutes}m {seconds}s before using /kill again.",
+                f"⏳ <b>Cooldown!</b> You must wait {seconds}s before using /kill again.",
                 parse_mode='HTML'
             )
             return
@@ -395,8 +402,7 @@ async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🔪 <b>You killed {target_username or target_id}!</b>\n"
         f"💰 You gained <b>500 Rs</b>.\n"
-        f"💵 New balance: <b>{new_killer_balance} Rs</b>\n"
-        f"📊 Kills in last 12h: {remaining_kills - 1}/10 used",
+        f"💵 New balance: <b>{new_killer_balance} Rs</b>",
         parse_mode='HTML'
     )
 
@@ -566,7 +572,7 @@ async def rob(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💨 <b>You ran past {target_username or target_id} and stole {actual_steal} Rs. They're still looking around confused.</b>",
     ]
     await update.message.reply_text(
-        random.choice(funny_lines) + f"\n\n📊 Robs in last 12h: {remaining_robs - 1}/10 used",
+        random.choice(funny_lines),
         parse_mode='HTML'
     )
 
