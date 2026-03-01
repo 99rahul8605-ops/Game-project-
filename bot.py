@@ -1,6 +1,8 @@
 import os
 import logging
 import random
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 from pymongo import MongoClient
 from telegram import Update
@@ -21,6 +23,24 @@ MONGO_URI = os.environ.get("MONGO_URI")
 client = MongoClient(MONGO_URI)
 db = client["telegram_game_bot"]
 users_collection = db["users"]
+
+# ---------- Minimal HTTP Server for Render Web Service ----------
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+    def log_message(self, format, *args):
+        # Suppress HTTP server logs
+        return
+
+def run_http_server():
+    port = int(os.environ.get("PORT", 8000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    logger.info(f"HTTP server listening on port {port}")
+    server.serve_forever()
+# -----------------------------------------------------------------
 
 # Helper functions
 def get_user(user_id):
@@ -258,6 +278,10 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(msg="Exception while handling an update:", exc_info=context.error)
 
 def main():
+    # Start HTTP server in a background thread (for Render Web Service compatibility)
+    http_thread = threading.Thread(target=run_http_server, daemon=True)
+    http_thread.start()
+
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("bal", bal))
