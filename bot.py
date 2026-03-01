@@ -246,7 +246,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💊 /revive – Revive yourself or reply to revive someone (cost 100 Rs)\n"
         "🦹 /rob – Reply to rob someone (steal 100-5000 Rs in hundreds, max 10 per 12h, 1min cooldown, cannot rob protected users)\n"
         "🛡️ /protect – Buy protection from being killed/robbed (plans with inline buttons)\n"
-        "🎁 /give <amount> – Reply to someone to give them money (10% fee deducted)\n"
+        "🎁 /give &lt;amount&gt; – Reply to someone to give them money (10% fee deducted)\n"
         "📨 /invite – Get your personal invite link (works only in DM)\n"
         "ℹ️ /help – Show this message"
     )
