@@ -60,10 +60,11 @@ def reset_and_set_commands():
     commands = [
         {"command": "start", "description": "🎮 Register & get 1000 Rs"},
         {"command": "bal", "description": "💰 Check balance & status"},
+        {"command": "top", "description": "🏆 Show top 10 richest players"},
         {"command": "kill", "description": "🔪 Kill someone (reply, gain 500 Rs)"},
         {"command": "revive", "description": "💊 Revive yourself or someone (cost 100 Rs)"},
-        {"command": "rob", "description": "🦹 Rob someone (reply, steal 50-300 Rs)"},
-        {"command": "protect", "description": "🛡️ Buy protection from being killed"},
+        {"command": "rob", "description": "🦹 Rob someone (reply, steal 100-5000 Rs in hundreds, cannot rob protected users)"},
+        {"command": "protect", "description": "🛡️ Buy protection from being killed/robbed"},
         {"command": "give", "description": "🎁 Give money (reply, 10% fee deducted)"},
         {"command": "invite", "description": "📨 Get your personal invite link"},
         {"command": "help", "description": "ℹ️ Show all commands"}
@@ -180,15 +181,40 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📜 <b>Game Commands</b>\n\n"
         "🎮 /start – Register and get 1000 Rs\n"
         "💰 /bal – Check your balance and status (reply to check others)\n"
+        "🏆 /top – Show top 10 richest players\n"
         "🔪 /kill – Reply to someone to kill them (gain 500 Rs, target dies 5h)\n"
         "💊 /revive – Revive yourself or reply to revive someone (cost 100 Rs)\n"
-        "🦹 /rob – Reply to rob someone (steal 50-300 Rs, 1min cooldown)\n"
-        "🛡️ /protect – Buy protection from being killed (plans with inline buttons)\n"
+        "🦹 /rob – Reply to rob someone (steal 100-5000 Rs in hundreds, cannot rob protected users)\n"
+        "🛡️ /protect – Buy protection from being killed/robbed (plans with inline buttons)\n"
         "🎁 /give <amount> – Reply to someone to give them money (10% fee deducted)\n"
         "📨 /invite – Get your personal invite link (works only in DM)\n"
         "ℹ️ /help – Show this message"
     )
     await update.message.reply_text(help_text, parse_mode='HTML')
+
+async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show top 10 users by balance."""
+    # Get top 10 users sorted by balance descending
+    cursor = users_collection.find().sort("balance", -1).limit(10)
+    top_users = list(cursor)
+    
+    if not top_users:
+        await update.message.reply_text("📊 <b>No users found.</b>", parse_mode='HTML')
+        return
+    
+    # Build leaderboard message
+    lines = ["🏆 <b>Top 10 Richest Players</b>\n"]
+    for idx, user in enumerate(top_users, start=1):
+        username = user.get("username")
+        if username:
+            display_name = f"@{username}"
+        else:
+            display_name = f"User {user['user_id']}"
+        balance = user['balance']
+        medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else "▫️"
+        lines.append(f"{medal} <b>{idx}.</b> {display_name} – <b>{balance} Rs</b>")
+    
+    await update.message.reply_text("\n".join(lines), parse_mode='HTML')
 
 async def bal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -430,7 +456,21 @@ async def rob(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚰️ <b>Target is dead.</b> You can't rob a corpse.", parse_mode='HTML')
         return
 
-    steal_amount = random.randint(50, 300)
+    # Check if target is protected
+    if check_protection(target):
+        remaining = target["protection_until"] - datetime.utcnow()
+        hours, remainder = divmod(remaining.seconds, 3600)
+        minutes = remainder // 60
+        await update.message.reply_text(
+            f"🛡️ <b>{target_username or target_id} is protected!</b>\n"
+            f"They cannot be robbed for another {hours}h {minutes}m.",
+            parse_mode='HTML'
+        )
+        return
+
+    # Generate random steal amount in multiples of 100 from 100 to 5000
+    possible_amounts = list(range(100, 5001, 100))
+    steal_amount = random.choice(possible_amounts)
     actual_steal = min(steal_amount, target["balance"])
 
     if actual_steal == 0:
@@ -495,7 +535,7 @@ async def protect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "🛡️ <b>Choose a protection plan:</b>\n\n"
-        "While protected, nobody can kill you.\n"
+        "While protected, nobody can kill or rob you.\n"
         "Select duration below:",
         reply_markup=reply_markup,
         parse_mode='HTML'
@@ -680,6 +720,7 @@ def main():
     # Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("top", top))
     application.add_handler(CommandHandler("bal", bal))
     application.add_handler(CommandHandler("kill", kill))
     application.add_handler(CommandHandler("revive", revive))
