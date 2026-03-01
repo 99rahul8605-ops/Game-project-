@@ -10,7 +10,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 from pymongo import MongoClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, ChatMemberHandler
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 from telegram.constants import ParseMode
 
 # Enable logging
@@ -29,7 +29,6 @@ OWNER_IDS = set(map(int, os.environ.get("OWNER_ID", "").split(","))) if os.envir
 client = MongoClient(MONGO_URI)
 db = client["telegram_game_bot"]
 users_collection = db["users"]
-groups_collection = db["groups"]
 
 # Cooldown storage (in-memory)
 last_rob = {}      # user_id -> datetime
@@ -68,7 +67,7 @@ def reset_and_set_commands():
         {"command": "top", "description": "🏆 Show top 10 richest players"},
         {"command": "kill", "description": "🔪 Kill someone (reply, gain 500 Rs, max 10 per 12h, 1min cooldown)"},
         {"command": "revive", "description": "💊 Revive yourself or someone (cost 100 Rs)"},
-        {"command": "rob", "description": "🦹 Rob someone (reply, steal 100-5000 Rs in hundreds, max 10 per 12h, 1min cooldown, cannot rob protected)"},
+        {"command": "rob", "description": "🦹 Rob someone (reply, steal 100-3000 Rs in hundreds, max 10 per 12h, 1min cooldown, cannot rob protected)"},
         {"command": "protect", "description": "🛡️ Buy protection from being killed/robbed"},
         {"command": "give", "description": "🎁 Give money (reply, 10% fee deducted)"},
         {"command": "invite", "description": "📨 Get your personal invite link"},
@@ -219,21 +218,6 @@ def get_display_name(user):
         return f"@{user.username}"
     return user.first_name or "User"
 
-# Group tracking
-def add_group(chat_id, title=None):
-    group = groups_collection.find_one({"chat_id": chat_id})
-    if not group:
-        groups_collection.insert_one({"chat_id": chat_id, "title": title})
-        logger.info(f"Bot added to group {chat_id} ({title})")
-    else:
-        # Update title if changed
-        if title and group.get("title") != title:
-            groups_collection.update_one({"chat_id": chat_id}, {"$set": {"title": title}})
-
-def remove_group(chat_id):
-    groups_collection.delete_one({"chat_id": chat_id})
-    logger.info(f"Bot removed from group {chat_id}")
-
 # Command handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -283,7 +267,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🏆 /top – Show top 10 richest players\n"
         "🔪 /kill – Reply to someone to kill them (gain 500 Rs, target dies 5h, max 10 per 12h, 1min cooldown)\n"
         "💊 /revive – Revive yourself or reply to revive someone (cost 100 Rs)\n"
-        "🦹 /rob – Reply to rob someone (steal 100-5000 Rs in hundreds, max 10 per 12h, 1min cooldown, cannot rob protected users)\n"
+        "🦹 /rob – Reply to rob someone (steal 100-3000 Rs in hundreds, max 10 per 12h, 1min cooldown, cannot rob protected users)\n"
         "🛡️ /protect – Buy protection from being killed/robbed (plans with inline buttons)\n"
         "🎁 /give &lt;amount&gt; – Reply to someone to give them money (10% fee deducted)\n"
         "📨 /invite – Get your personal invite link (works only in DM)\n"
@@ -677,8 +661,8 @@ async def rob(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Generate random steal amount in multiples of 100 from 100 to 5000
-    possible_amounts = list(range(100, 5001, 100))
+    # Generate random steal amount in multiples of 100 from 100 to 3000
+    possible_amounts = list(range(100, 3001, 100))
     steal_amount = random.choice(possible_amounts)
     actual_steal = min(steal_amount, target["balance"])
 
@@ -946,24 +930,6 @@ async def invite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode='HTML')
 
-# ------------------ Group Tracking ------------------
-async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Track when bot is added to or removed from groups."""
-    if update.my_chat_member:
-        chat = update.effective_chat
-        old_status = update.my_chat_member.old_chat_member.status
-        new_status = update.my_chat_member.new_chat_member.status
-
-        # Only care about groups/supergroups
-        if chat.type in ["group", "supergroup"]:
-            # Bot was added to group
-            if old_status in ["left", "kicked"] and new_status in ["member", "administrator"]:
-                add_group(chat.id, chat.title)
-            # Bot was removed from group
-            elif new_status in ["left", "kicked"]:
-                remove_group(chat.id)
-# ---------------------------------------------------
-
 # ------------------ Owner Commands ------------------
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show bot statistics (owner only)."""
@@ -972,15 +938,13 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     total_users = users_collection.count_documents({})
-    total_groups = groups_collection.count_documents({})
     total_balance = sum(user.get("balance", 0) for user in users_collection.find({}, {"balance": 1}))
     alive_count = users_collection.count_documents({"alive": True})
     dead_count = users_collection.count_documents({"alive": False})
     
     stats_text = (
         f"📊 <b>Bot Statistics</b>\n\n"
-        f"👥 Users: <b>{total_users}</b>\n"
-        f"👥 Groups: <b>{total_groups}</b>\n"
+        f"👥 Total users: <b>{total_users}</b>\n"
         f"💰 Total balance: <b>{total_balance} Rs</b>\n"
         f"🟢 Alive: <b>{alive_count}</b>\n"
         f"🔴 Dead: <b>{dead_count}</b>"
@@ -988,7 +952,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(stats_text, parse_mode='HTML')
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Broadcast a message to all users and groups (owner only)."""
+    """Broadcast a message to all users (owner only)."""
     if not is_owner(update.effective_user.id):
         await update.message.reply_text("⛔ <b>Owner only command.</b>", parse_mode='HTML')
         return
@@ -1004,46 +968,28 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     status_msg = await update.message.reply_text("📤 <b>Broadcasting started...</b>", parse_mode='HTML')
     
-    # Get all user IDs
+    # Get all user IDs (excluding bot itself)
     all_users = list(users_collection.find({}, {"user_id": 1}))
-    # Get all group IDs
-    all_groups = list(groups_collection.find({}, {"chat_id": 1}))
-    
-    total_users = len(all_users)
-    total_groups = len(all_groups)
-    total = total_users + total_groups
+    total = len(all_users)
     success = 0
     failed = 0
     
-    # Send to users
     for user_doc in all_users:
-        chat_id = user_doc["user_id"]
+        user_id = user_doc["user_id"]
         try:
-            await update.message.reply_to_message.copy(chat_id=chat_id)
+            # Copy the replied message to the user
+            await update.message.reply_to_message.copy(chat_id=user_id)
             success += 1
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.05)  # small delay to avoid flood limits
         except Exception as e:
             failed += 1
-            logger.warning(f"Failed to send broadcast to user {chat_id}: {e}")
-    
-    # Send to groups
-    for group_doc in all_groups:
-        chat_id = group_doc["chat_id"]
-        try:
-            await update.message.reply_to_message.copy(chat_id=chat_id)
-            success += 1
-            await asyncio.sleep(0.05)
-        except Exception as e:
-            failed += 1
-            logger.warning(f"Failed to send broadcast to group {chat_id}: {e}")
+            logger.warning(f"Failed to send broadcast to {user_id}: {e}")
     
     await status_msg.edit_text(
         f"📊 <b>Broadcast completed</b>\n"
         f"✅ Sent: <b>{success}</b>\n"
         f"❌ Failed: <b>{failed}</b>\n"
-        f"👥 Users: <b>{total_users}</b>\n"
-        f"👥 Groups: <b>{total_groups}</b>\n"
-        f"📦 Total: <b>{total}</b>",
+        f"👥 Total: <b>{total}</b>",
         parse_mode='HTML'
     )
 # ---------------------------------------------------
@@ -1077,9 +1023,6 @@ def main():
     # Owner commands
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("broadcast", broadcast))
-    
-    # Group tracking
-    application.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     
     # Callback handler for protection plans
     application.add_handler(CallbackQueryHandler(protect_callback, pattern="^protect_"))
