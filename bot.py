@@ -203,6 +203,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         match = re.match(r"ref_(\d+)", context.args[0])
         if match:
             referrer_id = int(match.group(1))
+            # Prevent bot from being a referrer (should not happen, but just in case)
+            if referrer_id == context.bot.id:
+                referrer_id = None
     
     # Get or create user (with possible referrer) – pass context for notification
     db_user = get_or_create_user(user_id, username, referrer_id, context)
@@ -243,8 +246,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show top 10 users by balance."""
-    # Get top 10 users sorted by balance descending
-    cursor = users_collection.find().sort("balance", -1).limit(10)
+    # Get top 10 users sorted by balance descending (excluding bot)
+    cursor = users_collection.find({"user_id": {"$ne": context.bot.id}}).sort("balance", -1).limit(10)
     top_users = list(cursor)
     
     if not top_users:
@@ -275,12 +278,17 @@ async def bal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_id = target_user.id
         target_username = target_user.username or str(target_id)
         is_self = (target_id == user_id)
+        
+        # Prevent checking bot's balance
+        if target_id == context.bot.id:
+            await update.message.reply_text("🤖 <b>The bot does not have a balance.</b>", parse_mode='HTML')
+            return
     else:
         target_id = user_id
         target_username = username or str(user_id)
         is_self = True
     
-    # Get or create target user (no context needed for notifications here)
+    # Get or create target user
     db_user = get_or_create_user(target_id, target_username)
     db_user, revived = check_and_revive(db_user)
     protected = check_protection(db_user)
@@ -313,7 +321,7 @@ async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username
     
-    # Cooldown check (now 1 minute)
+    # Cooldown check (1 minute)
     if user_id in last_kill:
         time_diff = datetime.utcnow() - last_kill[user_id]
         if time_diff < timedelta(minutes=1):
@@ -339,6 +347,11 @@ async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if killer_id == target_id:
         await update.message.reply_text("😵 <b>You cannot kill yourself.</b>", parse_mode='HTML')
+        return
+
+    # Prevent killing the bot
+    if target_id == context.bot.id:
+        await update.message.reply_text("🤖 <b>You cannot kill the bot!</b>", parse_mode='HTML')
         return
 
     # Get or create users
@@ -398,9 +411,25 @@ async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Set cooldown
     last_kill[user_id] = now
+
+    # Random funny kill lines
+    funny_kill_lines = [
+        f"💀 <b>You sent {target_username or target_id} to the afterlife!</b>",
+        f"⚰️ <b>{target_username or target_id} didn't see that coming!</b>",
+        f"🔪 <b>That was a clean kill on {target_username or target_id}!</b>",
+        f"👻 <b>{target_username or target_id} is now a ghost!</b>",
+        f"💢 <b>You eliminated {target_username or target_id} with style!</b>",
+        f"🗡️ <b>{target_username or target_id} never stood a chance!</b>",
+        f"💥 <b>Boom! {target_username or target_id} is history!</b>",
+        f"🪦 <b>Rest in pieces, {target_username or target_id}!</b>",
+        f"🔫 <b>Headshot! {target_username or target_id} is down!</b>",
+        f"🥷 <b>Ninja strike! {target_username or target_id} eliminated!</b>",
+        f"😵 <b>{target_username or target_id} was murdered in cold blood!</b>",
+        f"🩸 <b>Bloodbath! {target_username or target_id} didn't survive!</b>",
+    ]
     
     await update.message.reply_text(
-        f"🔪 <b>You killed {target_username or target_id}!</b>\n"
+        f"{random.choice(funny_kill_lines)}\n"
         f"💰 You gained <b>500 Rs</b>.\n"
         f"💵 New balance: <b>{new_killer_balance} Rs</b>",
         parse_mode='HTML'
@@ -416,6 +445,11 @@ async def revive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_id = update.message.reply_to_message.from_user.id
         target_username = update.message.reply_to_message.from_user.username
         reviving_self = (target_id == user_id)
+        
+        # Prevent reviving the bot
+        if target_id == context.bot.id:
+            await update.message.reply_text("🤖 <b>The bot cannot be revived (it was never alive).</b>", parse_mode='HTML')
+            return
     else:
         target_id = user_id
         target_username = username
@@ -505,6 +539,11 @@ async def rob(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🤔 <b>You cannot rob yourself.</b>", parse_mode='HTML')
         return
 
+    # Prevent robbing the bot
+    if target_id == context.bot.id:
+        await update.message.reply_text("🤖 <b>The bot has no money to rob!</b>", parse_mode='HTML')
+        return
+
     robber = get_or_create_user(robber_id, username)
     target = get_or_create_user(target_id, target_username)
 
@@ -564,15 +603,18 @@ async def rob(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Set cooldown
     last_rob[user_id] = now
 
-    funny_lines = [
+    funny_rob_lines = [
         f"🦹 <b>You snatched {actual_steal} Rs from {target_username or target_id} and vanished like a ninja!</b>",
         f"💰 <b>Quick hands! You lifted {actual_steal} Rs from {target_username or target_id} while they were checking their phone.</b>",
         f"😈 <b>Pickpocketing success! +{actual_steal} Rs from {target_username or target_id}. They'll never know it was you...</b>",
         f"🎭 <b>Disguised as a bush, you grabbed {actual_steal} Rs from {target_username or target_id}. Master of stealth!</b>",
         f"💨 <b>You ran past {target_username or target_id} and stole {actual_steal} Rs. They're still looking around confused.</b>",
+        f"🔓 <b>You picked {target_username or target_id}'s pocket and found {actual_steal} Rs!</b>",
+        f"🕵️ <b>While {target_username or target_id} wasn't looking, you swiped {actual_steal} Rs.</b>",
+        f"🎪 <b>Distraction achieved! You made off with {actual_steal} Rs from {target_username or target_id}.</b>",
     ]
     await update.message.reply_text(
-        random.choice(funny_lines),
+        random.choice(funny_rob_lines),
         parse_mode='HTML'
     )
 
@@ -708,6 +750,11 @@ async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if sender_id == receiver_id:
         await update.message.reply_text("🤔 <b>You cannot give money to yourself.</b>", parse_mode='HTML')
+        return
+
+    # Prevent giving money to the bot
+    if receiver_id == context.bot.id:
+        await update.message.reply_text("🤖 <b>The bot does not accept money.</b>", parse_mode='HTML')
         return
     
     sender = get_or_create_user(sender_id, username)
