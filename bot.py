@@ -59,6 +59,7 @@ def reset_and_set_commands():
     # Define new commands with descriptions
     commands = [
         {"command": "start", "description": "🎮 Register & get 1000 Rs"},
+        {"command": "daily", "description": "📅 Claim 2000 Rs daily reward"},
         {"command": "bal", "description": "💰 Check balance & status"},
         {"command": "top", "description": "🏆 Show top 10 richest players"},
         {"command": "kill", "description": "🔪 Kill someone (reply, gain 500 Rs, max 10 per 12h, 1min cooldown)"},
@@ -89,8 +90,9 @@ def create_user(user_id, username=None, referrer_id=None, context=None):
         "alive": True,
         "death_time": None,
         "protection_until": None,
-        "kill_timestamps": [],   # list of datetimes for kills in last 12h
-        "rob_timestamps": []     # list of datetimes for robs in last 12h
+        "last_daily": None,          # timestamp of last daily claim
+        "kill_timestamps": [],        # list of datetimes for kills in last 12h
+        "rob_timestamps": []          # list of datetimes for robs in last 12h
     }
     users_collection.insert_one(user)
     
@@ -154,6 +156,9 @@ def get_or_create_user(user_id, username=None, referrer_id=None, context=None):
         if "rob_timestamps" not in user:
             user["rob_timestamps"] = []
             updated = True
+        if "last_daily" not in user:
+            user["last_daily"] = None
+            updated = True
         if username and user.get("username") != username:
             user["username"] = username
             updated = True
@@ -161,6 +166,7 @@ def get_or_create_user(user_id, username=None, referrer_id=None, context=None):
             update_user(user_id, {
                 "kill_timestamps": user["kill_timestamps"],
                 "rob_timestamps": user["rob_timestamps"],
+                "last_daily": user["last_daily"],
                 "username": user["username"]
             })
     return user
@@ -214,7 +220,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎮 <b>Welcome to the Game Bot!</b>\n\n"
         f"💰 You have been credited with <b>1000 Rs</b>.\n"
         f"💡 Use /help to see all commands.\n"
-        f"🎯 Invite friends with /invite and earn <b>5000 Rs</b> each!"
+        f"🎯 Invite friends with /invite and earn <b>5000 Rs</b> each!\n"
+        f"📅 Don't forget your /daily reward!"
     )
     if referrer_id and referrer_id != user_id:
         welcome += f"\n\n✨ You joined through a friend's invite!"
@@ -232,6 +239,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "📜 <b>Game Commands</b>\n\n"
         "🎮 /start – Register and get 1000 Rs\n"
+        "📅 /daily – Claim 2000 Rs daily reward (once per 24h)\n"
         "💰 /bal – Check your balance and status (reply to check others)\n"
         "🏆 /top – Show top 10 richest players\n"
         "🔪 /kill – Reply to someone to kill them (gain 500 Rs, target dies 5h, max 10 per 12h, 1min cooldown)\n"
@@ -243,6 +251,45 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "ℹ️ /help – Show this message"
     )
     await update.message.reply_text(help_text, parse_mode='HTML')
+
+async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    username = update.effective_user.username
+    user = get_or_create_user(user_id, username)
+    user, _ = check_and_revive(user)  # just to ensure alive status is updated, not required for daily
+    
+    now = datetime.utcnow()
+    last_daily = user.get("last_daily")
+    
+    if last_daily:
+        # If last_daily is a datetime object, check if 24h have passed
+        if isinstance(last_daily, datetime):
+            time_diff = now - last_daily
+            if time_diff < timedelta(hours=24):
+                remaining = timedelta(hours=24) - time_diff
+                hours, remainder = divmod(remaining.seconds, 3600)
+                minutes = remainder // 60
+                await update.message.reply_text(
+                    f"⏳ <b>Daily reward already claimed!</b>\n"
+                    f"Next reward available in {hours}h {minutes}m.",
+                    parse_mode='HTML'
+                )
+                return
+        else:
+            # If last_daily is not a datetime (e.g., string), treat as never claimed
+            pass
+    
+    # Give reward
+    new_balance = user["balance"] + 2000
+    update_user(user_id, {"balance": new_balance, "last_daily": now})
+    
+    await update.message.reply_text(
+        f"📅 <b>Daily reward claimed!</b>\n"
+        f"💰 You received <b>2000 Rs</b>.\n"
+        f"💵 New balance: <b>{new_balance} Rs</b>\n"
+        f"⏳ Come back in 24 hours for your next reward!",
+        parse_mode='HTML'
+    )
 
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show top 10 users by balance."""
@@ -639,10 +686,10 @@ async def protect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"🛡️ <b>You are already protected!</b>\n"
             f"Protection ends in {hours}h {minutes}m.\n"
-            f"You can purchase a new plan to extend it.",
+            f"You cannot purchase a new plan until your current protection expires.",
             parse_mode='HTML'
         )
-        # Continue to show menu
+        return
 
     # Inline keyboard with protection plans
     keyboard = [
@@ -670,6 +717,19 @@ async def protect_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = query.from_user.username
     user = get_or_create_user(user_id, username)
     user, _ = check_and_revive(user)
+    
+    # Check if already protected (prevents using old buttons)
+    if check_protection(user):
+        remaining = user["protection_until"] - datetime.utcnow()
+        hours, remainder = divmod(remaining.seconds, 3600)
+        minutes = remainder // 60
+        await query.edit_message_text(
+            f"🛡️ <b>You are already protected!</b>\n"
+            f"Protection ends in {hours}h {minutes}m.\n"
+            f"You cannot purchase a new plan until your current protection expires.",
+            parse_mode='HTML'
+        )
+        return
     
     data = query.data
     if data == "protect_cancel":
@@ -846,6 +906,7 @@ def main():
     # Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("daily", daily))
     application.add_handler(CommandHandler("top", top))
     application.add_handler(CommandHandler("bal", bal))
     application.add_handler(CommandHandler("kill", kill))
