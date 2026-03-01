@@ -363,8 +363,16 @@ async def bal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_self = True
     
     # Get or create target user (with first name for display)
-    db_user = get_or_create_user(target_id, target_user.username if not is_self else username, 
-                                 target_user.first_name if not is_self else first_name)
+    # For target, we need to get the user object from the message if replying, else use current user
+    if not is_self:
+        target_user_obj = update.message.reply_to_message.from_user
+        target_username = target_user_obj.username
+        target_first_name = target_user_obj.first_name
+    else:
+        target_username = username
+        target_first_name = first_name
+
+    db_user = get_or_create_user(target_id, target_username, target_first_name)
     db_user, revived = check_and_revive(db_user)
     protected = check_protection(db_user)
     
@@ -534,8 +542,11 @@ async def revive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_display = get_display_name(update.effective_user)
         reviving_self = True
 
-    target = get_or_create_user(target_id, target_user.username if not reviving_self else username,
-                                 target_user.first_name if not reviving_self else first_name)
+    if reviving_self:
+        target = get_or_create_user(target_id, username, first_name)
+    else:
+        target = get_or_create_user(target_id, target_user.username, target_user.first_name)
+
     target, _ = check_and_revive(target)
 
     if reviving_self:
@@ -973,23 +984,37 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = len(all_users)
     success = 0
     failed = 0
-    
-    for user_doc in all_users:
+    failed_list = []  # store a few failed IDs for debugging
+
+    for idx, user_doc in enumerate(all_users, start=1):
         user_id = user_doc["user_id"]
         try:
             # Copy the replied message to the user
             await update.message.reply_to_message.copy(chat_id=user_id)
             success += 1
+            # Progress update every 50 users
+            if idx % 50 == 0:
+                await status_msg.edit_text(
+                    f"📤 <b>Broadcasting...</b> {idx}/{total}",
+                    parse_mode='HTML'
+                )
             await asyncio.sleep(0.05)  # small delay to avoid flood limits
         except Exception as e:
             failed += 1
+            if len(failed_list) < 5:  # keep first 5 failures
+                failed_list.append(f"User {user_id}: {e}")
             logger.warning(f"Failed to send broadcast to {user_id}: {e}")
+    
+    # Prepare failure details
+    fail_detail = ""
+    if failed_list:
+        fail_detail = "\n\n<b>Sample failures:</b>\n" + "\n".join(failed_list)
     
     await status_msg.edit_text(
         f"📊 <b>Broadcast completed</b>\n"
         f"✅ Sent: <b>{success}</b>\n"
         f"❌ Failed: <b>{failed}</b>\n"
-        f"👥 Total: <b>{total}</b>",
+        f"👥 Total: <b>{total}</b>{fail_detail}",
         parse_mode='HTML'
     )
 # ---------------------------------------------------
