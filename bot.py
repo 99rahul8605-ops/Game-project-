@@ -64,7 +64,7 @@ def reset_and_set_commands():
         {"command": "revive", "description": "💊 Revive yourself or someone (cost 100 Rs)"},
         {"command": "rob", "description": "🦹 Rob someone (reply, steal 50-300 Rs)"},
         {"command": "protect", "description": "🛡️ Buy protection from being killed"},
-        {"command": "give", "description": "🎁 Give money to someone (reply, 5% fee)"},
+        {"command": "give", "description": "🎁 Give money (reply, 10% fee deducted)"},
         {"command": "invite", "description": "📨 Get your personal invite link"},
         {"command": "help", "description": "ℹ️ Show all commands"}
     ]
@@ -169,12 +169,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "📜 <b>Game Commands</b>\n\n"
         "🎮 /start – Register and get 1000 Rs\n"
-        "💰 /bal – Check your balance and status\n"
+        "💰 /bal – Check your balance and status (reply to check others)\n"
         "🔪 /kill – Reply to someone to kill them (gain 500 Rs, target dies 5h)\n"
         "💊 /revive – Revive yourself or reply to revive someone (cost 100 Rs)\n"
         "🦹 /rob – Reply to rob someone (steal 50-300 Rs, 1min cooldown)\n"
         "🛡️ /protect – Buy protection from being killed (plans with inline buttons)\n"
-        "🎁 /give <amount> – Reply to someone to give them money (5% fee)\n"
+        "🎁 /give <amount> – Reply to someone to give them money (10% fee deducted)\n"
         "📨 /invite – Get your personal invite link (works only in DM)\n"
         "ℹ️ /help – Show this message"
     )
@@ -183,14 +183,33 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def bal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username
-    db_user = get_or_create_user(user_id, username)
+    
+    # Determine target user (self if no reply, otherwise replied user)
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+        target_id = target_user.id
+        target_username = target_user.username or str(target_id)
+        is_self = (target_id == user_id)
+    else:
+        target_id = user_id
+        target_username = username or str(user_id)
+        is_self = True
+    
+    # Get or create target user
+    db_user = get_or_create_user(target_id, target_username)
     db_user, revived = check_and_revive(db_user)
     protected = check_protection(db_user)
     
     status_emoji = "🟢 Alive" if db_user["alive"] else "🔴 Dead"
     protection_status = "🛡️ Protected" if protected else "⚠️ Vulnerable"
+    
+    if is_self:
+        header = "👤 <b>Your Profile</b>"
+    else:
+        header = f"👤 <b>Profile of {target_username}</b>"
+    
     msg = (
-        f"👤 <b>Your Profile</b>\n\n"
+        f"{header}\n\n"
         f"💰 Balance: <b>{db_user['balance']} Rs</b>\n"
         f"⚰️ Status: {status_emoji}\n"
         f"🔰 Protection: {protection_status}"
@@ -201,7 +220,8 @@ async def bal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         minutes = remainder // 60
         msg += f"\n⏳ Protection ends in {hours}h {minutes}m"
     if revived:
-        msg += f"\n\n✨ You have been automatically revived after 5 hours!"
+        msg += f"\n\n✨ This user has been automatically revived after 5 hours!"
+    
     await update.message.reply_text(msg, parse_mode='HTML')
 
 async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -565,7 +585,7 @@ async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
     receiver = get_or_create_user(receiver_id, receiver_username)
     
     sender, _ = check_and_revive(sender)
-    # Receiver can be dead, still receive money? We'll allow.
+    # Receiver can be dead, still receive money
     
     # Check sender alive
     if not sender["alive"]:
@@ -575,28 +595,36 @@ async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Calculate fee (5% of amount, rounded to nearest integer)
-    fee = math.ceil(amount * 0.05)  # or round? We'll use ceil to avoid fractional Rs.
-    total_needed = amount + fee
+    # Calculate fee (10% of amount, rounded up)
+    fee = math.ceil(amount * 0.10)
+    receiver_gets = amount - fee
     
-    if sender["balance"] < total_needed:
+    if receiver_gets <= 0:
+        await update.message.reply_text(
+            f"⚠️ <b>Amount too small!</b> After 10% fee, receiver would get 0 Rs. Try a larger amount.",
+            parse_mode='HTML'
+        )
+        return
+    
+    if sender["balance"] < amount:
         await update.message.reply_text(
             f"💔 <b>Insufficient balance!</b>\n"
-            f"You need <b>{total_needed} Rs</b> (amount + 5% fee) but you only have <b>{sender['balance']} Rs</b>.",
+            f"You need <b>{amount} Rs</b> but you only have <b>{sender['balance']} Rs</b>.",
             parse_mode='HTML'
         )
         return
     
     # Perform transfer
-    new_sender_balance = sender["balance"] - total_needed
-    new_receiver_balance = receiver["balance"] + amount
+    new_sender_balance = sender["balance"] - amount
+    new_receiver_balance = receiver["balance"] + receiver_gets
     update_user(sender_id, {"balance": new_sender_balance})
     update_user(receiver_id, {"balance": new_receiver_balance})
     
     await update.message.reply_text(
         f"🎁 <b>Transfer successful!</b>\n"
         f"You gave <b>{amount} Rs</b> to {receiver_username or receiver_id}.\n"
-        f"💰 Fee (5%): <b>{fee} Rs</b>\n"
+        f"💰 Fee (10%): <b>{fee} Rs</b> (deducted from amount)\n"
+        f"📥 Receiver gets: <b>{receiver_gets} Rs</b>\n"
         f"💵 Your new balance: <b>{new_sender_balance} Rs</b>",
         parse_mode='HTML'
     )
