@@ -235,7 +235,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(welcome, parse_mode='HTML')
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "📜 <b>Game Commands</b>\n\n"
         "🎮 /start – Register and get 1000 Rs\n"
@@ -905,7 +905,7 @@ def main():
     
     # Handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("help", help_cmd))
     application.add_handler(CommandHandler("daily", daily))
     application.add_handler(CommandHandler("top", top))
     application.add_handler(CommandHandler("bal", bal))
