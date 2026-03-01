@@ -61,9 +61,9 @@ def reset_and_set_commands():
         {"command": "start", "description": "🎮 Register & get 1000 Rs"},
         {"command": "bal", "description": "💰 Check balance & status"},
         {"command": "top", "description": "🏆 Show top 10 richest players"},
-        {"command": "kill", "description": "🔪 Kill someone (reply, gain 500 Rs)"},
+        {"command": "kill", "description": "🔪 Kill someone (reply, gain 500 Rs, max 10 per 12h)"},
         {"command": "revive", "description": "💊 Revive yourself or someone (cost 100 Rs)"},
-        {"command": "rob", "description": "🦹 Rob someone (reply, steal 100-5000 Rs in hundreds, cannot rob protected users)"},
+        {"command": "rob", "description": "🦹 Rob someone (reply, steal 100-5000 Rs in hundreds, max 10 per 12h, cannot rob protected users)"},
         {"command": "protect", "description": "🛡️ Buy protection from being killed/robbed"},
         {"command": "give", "description": "🎁 Give money (reply, 10% fee deducted)"},
         {"command": "invite", "description": "📨 Get your personal invite link"},
@@ -88,7 +88,9 @@ def create_user(user_id, username=None, referrer_id=None, context=None):
         "balance": 1000,
         "alive": True,
         "death_time": None,
-        "protection_until": None  # datetime when protection expires
+        "protection_until": None,
+        "kill_timestamps": [],   # list of datetimes for kills in last 12h
+        "rob_timestamps": []     # list of datetimes for robs in last 12h
     }
     users_collection.insert_one(user)
     
@@ -143,10 +145,50 @@ def get_or_create_user(user_id, username=None, referrer_id=None, context=None):
     user = get_user(user_id)
     if not user:
         user = create_user(user_id, username, referrer_id, context)
-    elif username and user.get("username") != username:
-        update_user(user_id, {"username": username})
-        user["username"] = username
+    else:
+        # Ensure all fields exist (for old users)
+        updated = False
+        if "kill_timestamps" not in user:
+            user["kill_timestamps"] = []
+            updated = True
+        if "rob_timestamps" not in user:
+            user["rob_timestamps"] = []
+            updated = True
+        if username and user.get("username") != username:
+            user["username"] = username
+            updated = True
+        if updated:
+            update_user(user_id, {
+                "kill_timestamps": user["kill_timestamps"],
+                "rob_timestamps": user["rob_timestamps"],
+                "username": user["username"]
+            })
     return user
+
+def clean_old_timestamps(timestamps, hours=12):
+    """Remove timestamps older than `hours` and return cleaned list."""
+    now = datetime.utcnow()
+    cutoff = now - timedelta(hours=hours)
+    return [ts for ts in timestamps if ts >= cutoff]
+
+def add_action_timestamp(user_id, action_type, timestamp):
+    """Add a timestamp to the user's action list (kill or rob)."""
+    field = f"{action_type}_timestamps"
+    user = get_user(user_id)
+    if user:
+        timestamps = user.get(field, [])
+        timestamps = clean_old_timestamps(timestamps)  # clean before adding
+        timestamps.append(timestamp)
+        update_user(user_id, {field: timestamps})
+
+def can_perform_action(user, action_type, max_count=10, hours=12):
+    """Check if user can perform another action (kill/rob) within rolling window."""
+    field = f"{action_type}_timestamps"
+    timestamps = user.get(field, [])
+    cleaned = clean_old_timestamps(timestamps, hours)
+    # Update the cleaned list in the user object (but not DB yet)
+    user[field] = cleaned
+    return len(cleaned) < max_count, max_count - len(cleaned)
 
 # Command handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -182,9 +224,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎮 /start – Register and get 1000 Rs\n"
         "💰 /bal – Check your balance and status (reply to check others)\n"
         "🏆 /top – Show top 10 richest players\n"
-        "🔪 /kill – Reply to someone to kill them (gain 500 Rs, target dies 5h)\n"
+        "🔪 /kill – Reply to someone to kill them (gain 500 Rs, target dies 5h, max 10 per 12h)\n"
         "💊 /revive – Revive yourself or reply to revive someone (cost 100 Rs)\n"
-        "🦹 /rob – Reply to rob someone (steal 100-5000 Rs in hundreds, cannot rob protected users)\n"
+        "🦹 /rob – Reply to rob someone (steal 100-5000 Rs in hundreds, max 10 per 12h, cannot rob protected users)\n"
         "🛡️ /protect – Buy protection from being killed/robbed (plans with inline buttons)\n"
         "🎁 /give <amount> – Reply to someone to give them money (10% fee deducted)\n"
         "📨 /invite – Get your personal invite link (works only in DM)\n"
@@ -296,6 +338,16 @@ async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     killer = get_or_create_user(killer_id, username)
     target = get_or_create_user(target_id, target_username)
 
+    # Check kill limit (max 10 in 12h)
+    can_kill, remaining_kills = can_perform_action(killer, "kill")
+    if not can_kill:
+        await update.message.reply_text(
+            f"⛔ <b>Kill limit reached!</b>\nYou have already killed 10 players in the last 12 hours.\n"
+            f"Please wait for some kills to expire before trying again.",
+            parse_mode='HTML'
+        )
+        return
+
     # Auto‑revive
     killer, _ = check_and_revive(killer)
     target, _ = check_and_revive(target)
@@ -334,13 +386,17 @@ async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_user(killer_id, {"balance": new_killer_balance})
     update_user(target_id, {"alive": False, "death_time": now})
     
+    # Add kill timestamp
+    add_action_timestamp(killer_id, "kill", now)
+    
     # Set cooldown
     last_kill[user_id] = now
     
     await update.message.reply_text(
         f"🔪 <b>You killed {target_username or target_id}!</b>\n"
         f"💰 You gained <b>500 Rs</b>.\n"
-        f"💵 New balance: <b>{new_killer_balance} Rs</b>",
+        f"💵 New balance: <b>{new_killer_balance} Rs</b>\n"
+        f"📊 Kills in last 12h: {remaining_kills - 1}/10 used",
         parse_mode='HTML'
     )
 
@@ -446,6 +502,16 @@ async def rob(update: Update, context: ContextTypes.DEFAULT_TYPE):
     robber = get_or_create_user(robber_id, username)
     target = get_or_create_user(target_id, target_username)
 
+    # Check rob limit (max 10 in 12h)
+    can_rob, remaining_robs = can_perform_action(robber, "rob")
+    if not can_rob:
+        await update.message.reply_text(
+            f"⛔ <b>Rob limit reached!</b>\nYou have already robbed 10 players in the last 12 hours.\n"
+            f"Please wait for some robs to expire before trying again.",
+            parse_mode='HTML'
+        )
+        return
+
     robber, _ = check_and_revive(robber)
     target, _ = check_and_revive(target)
 
@@ -485,8 +551,12 @@ async def rob(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_user(target_id, {"balance": new_target_balance})
     update_user(robber_id, {"balance": new_robber_balance})
     
+    # Add rob timestamp
+    now = datetime.utcnow()
+    add_action_timestamp(robber_id, "rob", now)
+    
     # Set cooldown
-    last_rob[user_id] = datetime.utcnow()
+    last_rob[user_id] = now
 
     funny_lines = [
         f"🦹 <b>You snatched {actual_steal} Rs from {target_username or target_id} and vanished like a ninja!</b>",
@@ -495,7 +565,10 @@ async def rob(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎭 <b>Disguised as a bush, you grabbed {actual_steal} Rs from {target_username or target_id}. Master of stealth!</b>",
         f"💨 <b>You ran past {target_username or target_id} and stole {actual_steal} Rs. They're still looking around confused.</b>",
     ]
-    await update.message.reply_text(random.choice(funny_lines), parse_mode='HTML')
+    await update.message.reply_text(
+        random.choice(funny_lines) + f"\n\n📊 Robs in last 12h: {remaining_robs - 1}/10 used",
+        parse_mode='HTML'
+    )
 
 async def protect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
