@@ -4,6 +4,7 @@ import random
 import threading
 import re
 import math
+import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 from pymongo import MongoClient
@@ -47,6 +48,33 @@ def run_http_server():
     logger.info(f"HTTP server listening on port {port}")
     server.serve_forever()
 # -----------------------------------------------------------------
+
+# ---------- Set Bot Commands Menu ----------
+def reset_and_set_commands():
+    url = f"https://api.telegram.org/bot{TOKEN}/setMyCommands"
+    
+    # First clear any old commands
+    requests.post(url, json={"commands": []})
+    
+    # Define new commands with descriptions
+    commands = [
+        {"command": "start", "description": "🎮 Register & get 1000 Rs"},
+        {"command": "bal", "description": "💰 Check balance & status"},
+        {"command": "kill", "description": "🔪 Kill someone (reply, gain 500 Rs)"},
+        {"command": "revive", "description": "💊 Revive yourself or someone (cost 100 Rs)"},
+        {"command": "rob", "description": "🦹 Rob someone (reply, steal 50-300 Rs)"},
+        {"command": "protect", "description": "🛡️ Buy protection from being killed"},
+        {"command": "give", "description": "🎁 Give money to someone (reply, 5% fee)"},
+        {"command": "invite", "description": "📨 Get your personal invite link"},
+        {"command": "help", "description": "ℹ️ Show all commands"}
+    ]
+    
+    response = requests.post(url, json={"commands": commands})
+    if response.status_code == 200:
+        logger.info("Bot commands set successfully.")
+    else:
+        logger.error(f"Failed to set commands: {response.text}")
+# -----------------------------------------
 
 # Helper functions
 def get_user(user_id):
@@ -423,9 +451,7 @@ async def protect(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"You can purchase a new plan to extend it.",
             parse_mode='HTML'
         )
-        # Still show options to extend? For simplicity, we'll allow them to buy again (will overwrite)
-        # They might want to stack? We'll just replace with new expiry.
-        # So continue to show menu.
+        # Continue to show menu
 
     # Inline keyboard with protection plans
     keyboard = [
@@ -480,13 +506,7 @@ async def protect_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Calculate new protection expiry
     now = datetime.utcnow()
-    if user.get("protection_until") and isinstance(user["protection_until"], datetime) and user["protection_until"] > now:
-        # Extend from current expiry (overwrite? we'll replace with new expiry = now + hours)
-        # But better to extend: new expiry = max(current, now) + hours? We'll just set to now+hours for simplicity.
-        # However, to avoid abuse, we'll just set to now+hours (overwrites any remaining).
-        new_expiry = now + timedelta(hours=hours)
-    else:
-        new_expiry = now + timedelta(hours=hours)
+    new_expiry = now + timedelta(hours=hours)
     
     # Deduct cost and update protection
     new_balance = user["balance"] - cost
@@ -615,6 +635,9 @@ def main():
     http_thread.start()
 
     application = Application.builder().token(TOKEN).build()
+    
+    # Set bot commands menu
+    reset_and_set_commands()
     
     # Handlers
     application.add_handler(CommandHandler("start", start))
