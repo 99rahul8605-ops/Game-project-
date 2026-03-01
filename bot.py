@@ -80,7 +80,7 @@ def reset_and_set_commands():
 def get_user(user_id):
     return users_collection.find_one({"user_id": user_id})
 
-def create_user(user_id, username=None, referrer_id=None):
+def create_user(user_id, username=None, referrer_id=None, context=None):
     user = {
         "user_id": user_id,
         "username": username,
@@ -98,6 +98,16 @@ def create_user(user_id, username=None, referrer_id=None):
             new_balance = referrer["balance"] + 5000
             update_user(referrer_id, {"balance": new_balance})
             logger.info(f"Referrer {referrer_id} gained 5000 Rs for referring {user_id}")
+            # Notify referrer
+            if context:
+                try:
+                    context.bot.send_message(
+                        chat_id=referrer_id,
+                        text="🎉 <b>You got 5000 Rs!</b> A new user joined using your invite link.",
+                        parse_mode='HTML'
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to notify referrer {referrer_id}: {e}")
     return user
 
 def update_user(user_id, update):
@@ -128,10 +138,10 @@ def check_protection(user):
                 return True
     return False
 
-def get_or_create_user(user_id, username=None, referrer_id=None):
+def get_or_create_user(user_id, username=None, referrer_id=None, context=None):
     user = get_user(user_id)
     if not user:
-        user = create_user(user_id, username, referrer_id)
+        user = create_user(user_id, username, referrer_id, context)
     elif username and user.get("username") != username:
         update_user(user_id, {"username": username})
         user["username"] = username
@@ -151,8 +161,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if match:
             referrer_id = int(match.group(1))
     
-    # Get or create user (with possible referrer)
-    db_user = get_or_create_user(user_id, username, referrer_id)
+    # Get or create user (with possible referrer) – pass context for notification
+    db_user = get_or_create_user(user_id, username, referrer_id, context)
     
     welcome = (
         f"🎮 <b>Welcome to the Game Bot!</b>\n\n"
@@ -195,7 +205,7 @@ async def bal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_username = username or str(user_id)
         is_self = True
     
-    # Get or create target user
+    # Get or create target user (no context needed for notifications here)
     db_user = get_or_create_user(target_id, target_username)
     db_user, revived = check_and_revive(db_user)
     protected = check_protection(db_user)
